@@ -1,94 +1,87 @@
-# ---- env vars for low memory (must be set before importing TensorFlow) ----
+# ---- low-memory env (set before TF import) ----
 import os
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["TF_NUM_INTRAOP_THREADS"] = "1"
 os.environ["TF_NUM_INTEROP_THREADS"] = "1"
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
-# ----------------------- standard imports -----------------------
 from flask import Flask, request, redirect, render_template, flash
 from werkzeug.utils import secure_filename
+from tensorflow.keras import layers, models
 from tensorflow.keras.preprocessing import image
 import numpy as np
 
-# ----------------------- app/config -----------------------------
-classes = ["0","1","2","3","4","5","6","7","8","9"]
+# ----------------------- config -----------------------
+classes = [str(i) for i in range(10)]
 image_size = 28
-
 UPLOAD_FOLDER = "uploads"
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "gif"}
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret")  # flash で必要
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)  # 無ければ作成
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret")
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 def allowed_file(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
-# -------------------- model loader (TF2.3 互換) -----------------
-def ensure_model_h5():
-    """Try to load model.h5; if incompatible/missing, build a tiny model and save it (fits 512MB)."""
-    from tensorflow.keras.models import load_model
-    try:
-        return load_model("./model.h5")
-    except Exception as e:
-        print("model.h5 の読み込みに失敗。軽量モデルで再作成します:", e)
-        # 超軽量でメモリ節約して学習（512MBのFreeプラン想定）
-        from tensorflow.keras import layers, models, datasets, backend as K
-        (x_train, y_train), _ = datasets.mnist.load_data()
+# ------------------- model (same as Colab) -------------------
+def build_model():
+    m = models.Sequential([
+        layers.Conv2D(32, 3, activation='relu', input_shape=(28,28,1)),
+        layers.MaxPooling2D(),
+        layers.Conv2D(64, 3, activation='relu'),
+        layers.MaxPooling2D(),
+        layers.Flatten(),
+        layers.Dense(128, activation='relu'),
+        layers.Dense(10, activation='softmax')
+    ])
+    m.compile(optimizer='adam',
+              loss='sparse_categorical_crossentropy',
+              metrics=['accuracy'])
+    return m
 
-        # 使う枚数を絞ってメモリ削減
-        x_train = x_train[:10000]
-        y_train = y_train[:10000]
+def load_weights_model():
+    """Colabで保存した weights.h5 を読み込む（学習はしない）"""
+    m = build_model()
+    weights_path = "./weights.h5"   # ← リネームしていない場合は "mnist.weights.h5"
+    if not os.path.exists(weights_path):
+        raise FileNotFoundError(f"{weights_path} が見つかりません。リポジトリ直下に配置してください。")
+    m.load_weights(weights_path)
+    print(f"Loaded weights from {weights_path}")
+    return m
 
-        x_train = x_train.reshape(-1, 28, 28, 1).astype("float32") / 255.0
-
-        model = models.Sequential([
-            layers.Flatten(input_shape=(28, 28, 1)),
-            layers.Dense(64, activation="relu"),
-            layers.Dense(10, activation="softmax")
-        ])
-        model.compile(optimizer="adam",
-                      loss="sparse_categorical_crossentropy",
-                      metrics=["accuracy"])
-        model.fit(x_train, y_train, epochs=1, batch_size=32, verbose=1)
-        model.save("./model.h5")  # TF2.3 互換のHDF5
-        del x_train, y_train
-        K.clear_session()
-        print("model.h5 を作成しました。")
-        return model
-
-# アプリ起動時にモデルを用意
-model = ensure_model_h5()
+model = load_weights_model()
 
 # ----------------------- routes -----------------------
 @app.route("/", methods=["GET", "POST"])
 def upload_file():
     if request.method == "POST":
         if "file" not in request.files:
-            flash("ファイルがありません")
-            return redirect(request.url)
+            flash("ファイルがありません"); return redirect(request.url)
         file = request.files["file"]
         if file.filename == "":
-            flash("ファイルがありません")
-            return redirect(request.url)
+            flash("ファイルがありません"); return redirect(request.url)
         if file and allowed_file(file.filename):
             filename = secure_filename(file.filename)
             filepath = os.path.join(UPLOAD_FOLDER, filename)
             file.save(filepath)
 
-            # 画像を読み込み→正規化→(1, 28, 28, 1) へ
+            # 画像を読み込み（28x28, グレースケール）
             img = image.load_img(filepath, color_mode="grayscale",
                                  target_size=(image_size, image_size))
-            img = image.img_to_array(img).astype("float32") / 255.0
-            data = np.expand_dims(img, axis=0)
+            img = image.img_to_array(img).astype("float32")
+
+            # ★ 白地/黒地どちらでもOKにする（背景が白っぽければ反転）
+            if img.mean() > 128:
+                img = 255.0 - img
+
+            img /= 255.0
+            data = np.expand_dims(img, axis=0)  # (1, 28, 28, 1)
 
             # 推論
-            result = model.predict(data)[0]
-            predicted = int(result.argmax())
-            pred_answer = "これは " + classes[predicted] + " です"
-
-            return render_template("index.html", answer=pred_answer)
+            probs = model.predict(data)[0]
+            pred = int(probs.argmax())
+            return render_template("index.html", answer=f"これは {classes[pred]} です")
 
     return render_template("index.html", answer="")
 
