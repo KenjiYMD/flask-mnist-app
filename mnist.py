@@ -52,7 +52,7 @@ def ensure_model_h5():
         return model
 
 # ここでモデルを用意
-model = ensure_model_h5()
+model = load_model('./model.h5')
 
 
 @app.route('/', methods=['GET', 'POST'])
