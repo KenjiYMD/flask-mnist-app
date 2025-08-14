@@ -24,7 +24,7 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 def allowed_file(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
-# ------------------- model (same as Colab) -------------------
+# ------------------- model (Colabと同一アーキ) -------------------
 def build_model():
     m = models.Sequential([
         layers.Conv2D(32, 3, activation='relu', input_shape=(28,28,1)),
@@ -40,17 +40,21 @@ def build_model():
               metrics=['accuracy'])
     return m
 
-def load_weights_model():
-    """Colabで保存した weights.h5 を読み込む（学習はしない）"""
-    m = build_model()
-    weights_path = "./weights.h5"   # ← リネームしていない場合は "mnist.weights.h5"
+def load_npz_weights_model():
+    """Colabで保存した .npz 重みを読み込む（学習はしない）"""
+    weights_path = "./mnist_weights_v1.npz"  # ここに置いたファイル名
     if not os.path.exists(weights_path):
         raise FileNotFoundError(f"{weights_path} が見つかりません。リポジトリ直下に配置してください。")
-    m.load_weights(weights_path)
-    print(f"Loaded weights from {weights_path}")
+
+    m = build_model()
+    z = np.load(weights_path, allow_pickle=True)
+    # np.savez のデフォルト名 arr_0, arr_1, ... の順に並べ直して set_weights
+    ordered = [z[f"arr_{i}"] for i in range(len(z.files))]
+    m.set_weights(ordered)
+    print(f"Loaded weights from {weights_path} (arrays={len(ordered)})")
     return m
 
-model = load_weights_model()
+model = load_npz_weights_model()
 
 # ----------------------- routes -----------------------
 @app.route("/", methods=["GET", "POST"])
@@ -71,14 +75,13 @@ def upload_file():
                                  target_size=(image_size, image_size))
             img = image.img_to_array(img).astype("float32")
 
-            # ★ 白地/黒地どちらでもOKにする（背景が白っぽければ反転）
+            # ★ 白地/黒地どちらでもOK：背景が白っぽければ反転
             if img.mean() > 128:
                 img = 255.0 - img
 
             img /= 255.0
-            data = np.expand_dims(img, axis=0)  # (1, 28, 28, 1)
+            data = np.expand_dims(img, axis=0)  # (1,28,28,1)
 
-            # 推論
             probs = model.predict(data)[0]
             pred = int(probs.argmax())
             return render_template("index.html", answer=f"これは {classes[pred]} です")
